@@ -1,0 +1,178 @@
+import xml.etree.ElementTree as ET
+import os
+from keras.preprocessing.image import load_img
+import numpy as np
+from keras.utils import to_categorical
+from sklearn.preprocessing import LabelBinarizer
+from sklearn.model_selection import train_test_split
+from keras.preprocessing.image import img_to_array
+import pickle
+import cv2
+
+from keras.applications import VGG16
+from keras.layers import Flatten
+from keras.layers import Dropout
+from keras.layers import Dense
+from keras.layers import Input
+from keras.models import Model
+from keras.optimizers import Adam
+from keras.models import model_from_json
+
+dataset = 'Neu-Dataset/anno1'
+
+data = []
+labels = []
+bboxes = []
+
+def getLabel(name):
+    names = ['crazing','inclusion','patches','pitted_surface','rolled-in_scale','scratches']
+    label = 0
+    for i in range(len(names)):
+        if names[i].strip() == name.strip():
+            label = i
+            break
+    return label    
+
+for root, dirs, directory in os.walk(dataset):
+    for j in range(len(directory)):
+        name = directory[j].split(".")
+        folder_name = name[0].split("_")
+        if len(folder_name) > 2:
+            folder_name = folder_name[0]+"_"+folder_name[1]
+        else:
+            folder_name = folder_name[0]
+        tree = ET.parse(dataset+'/'+directory[j])
+        root = tree.getroot()
+        boxes = ''
+        for item in root.findall('object'):
+            xmin = float(item.find('bndbox/xmin').text)/200.0
+            ymin = float(item.find('bndbox/ymin').text)/200.0
+            xmax = float(item.find('bndbox/xmax').text)/200.0
+            ymax = float(item.find('bndbox/ymax').text)/200.0
+            boxes+=str(xmin)+","+str(ymin)+","+str(xmax)+","+str(ymax)+" "
+        name = name[0]    
+        bboxes.append(boxes.strip())
+        label = getLabel(folder_name.strip())
+        image = load_img('Neu-Dataset/images/'+folder_name+'/'+name+'.jpg', target_size=(80, 80))
+        image = img_to_array(image)
+        data.append(image)
+        labels.append(label)
+        print(boxes.strip()+" "+folder_name+" "+name+'.jpg'+" "+str(label))
+        
+data = np.array(data, dtype="float32") / 255.0
+labels = np.array(labels)
+bboxes = np.array(bboxes)
+
+
+#lb = LabelBinarizer()
+#labels = lb.fit_transform(labels)
+labels = to_categorical(labels)
+print(labels)
+#print(lb.classes_)
+
+np.save('model/img.txt',data)
+np.save('model/labels.txt',labels)
+np.save('model/bbox.txt',bboxes)
+'''
+f = open('model/lb.txt', "wb")
+f.write(pickle.dumps(lb))
+f.close()
+'''
+
+data = np.load('model/img.txt.npy')
+labels = np.load('model/labels.txt.npy')
+bboxes = np.load('model/bbox.txt.npy')
+print(labels[0])
+print(labels.shape)
+
+bound_boxes = []
+for i in range(len(bboxes)):
+    arr = bboxes[i].split(" ")
+    temp = []
+    for j in range(0,36):
+        temp.append(0)
+    index = 0    
+    for j in range(len(arr)):
+        annotation = arr[j].split(",")
+        for m in range(len(annotation)):
+            temp[index] = float(annotation[m])
+            index = index + 1
+    bound_boxes.append(temp)
+    
+bboxes = np.asarray(bound_boxes)
+indices = np.arange(data.shape[0])
+np.random.shuffle(indices)
+data = data[indices]
+labels = labels[indices]
+bboxes = bboxes[indices]
+print(bboxes.shape)
+print(data.shape)
+print(labels.shape)
+
+img = data[0]
+bb = bboxes[0]
+print(bb)
+xmin = int(bb[0]*200)
+ymin = int(bb[1]*200)
+xmax = int(bb[2]*200)
+ymax = int(bb[3]*200)
+img = cv2.resize(img,(200,200))
+cv2.rectangle(img, (xmin,ymin), (xmax,ymax), (0, 255, 0), 2)
+cv2.imshow("Output", img)
+cv2.waitKey(0)
+
+
+split = train_test_split(data, labels, bboxes, test_size=0.20, random_state=42)
+(trainImages, testImages) = split[:2]
+(trainLabels, testLabels) = split[2:4]
+(trainBBoxes, testBBoxes) = split[4:6]
+#(trainPaths, testPaths) = split[6:]
+
+vgg = VGG16(weights="imagenet", include_top=False, input_tensor=Input(shape=(80, 80, 3)))
+vgg.trainable = False
+flatten = vgg.output
+flatten = Flatten()(flatten)
+
+
+bboxHead = Dense(128, activation="relu")(flatten)
+bboxHead = Dense(64, activation="relu")(bboxHead)
+bboxHead = Dense(32, activation="relu")(bboxHead)
+bboxHead = Dense(36, activation="sigmoid", name="bounding_box")(bboxHead)
+
+softmaxHead = Dense(512, activation="relu")(flatten)
+softmaxHead = Dropout(0.5)(softmaxHead)
+softmaxHead = Dense(512, activation="relu")(softmaxHead)
+softmaxHead = Dropout(0.5)(softmaxHead)
+softmaxHead = Dense(labels.shape[1], activation="softmax", name="class_label")(softmaxHead)
+model = Model(inputs=vgg.input, outputs=(bboxHead, softmaxHead))
+losses = {
+	"class_label": "categorical_crossentropy",
+	"bounding_box": "mean_squared_error",
+}
+lossWeights = {
+	"class_label": 1.0,
+	"bounding_box": 1.0
+}
+opt = Adam(lr=1e-4)
+model.compile(loss=losses, optimizer=opt, metrics=["accuracy"], loss_weights=lossWeights)
+print(model.summary())
+
+trainTargets = {
+	"class_label": trainLabels,
+	"bounding_box": trainBBoxes
+}
+# construct a second dictionary, this one for our target testing
+# outputs
+testTargets = {
+	"class_label": testLabels,
+	"bounding_box": testBBoxes
+}
+hist = model.fit(trainImages, trainTargets, validation_data=(testImages, testTargets), batch_size=32, epochs=10, verbose=1)
+# serialize the model to disk
+print("[INFO] saving object detector model...")
+model.save('model/model.h5')
+f = open('model/history.pckl', 'wb')
+pickle.dump(hist.history, f)
+f.close()
+
+

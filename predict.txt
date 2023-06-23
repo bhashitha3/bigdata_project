@@ -1,0 +1,73 @@
+from keras.preprocessing.image import img_to_array
+from keras.preprocessing.image import load_img
+from keras.models import load_model
+import numpy as np
+import imutils
+import pickle
+import cv2
+import os
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score 
+
+model = load_model('model/model.h5')
+#lb = pickle.loads(open('model/lb.txt', "rb").read())
+'''
+data = np.load('model/img.txt.npy')
+(boxPreds, labelPreds) = model.predict(data)
+labels = np.load('model/labels.txt.npy')
+print(labelPreds.shape)
+
+labels = np.argmax(labels, axis=1)
+labelPreds = np.argmax(labelPreds, axis=1)
+accuracy = accuracy_score(labels,labelPreds)
+print(accuracy)
+cm = confusion_matrix(labels,labelPreds)
+print("RNN Confusion Matrix : "+str(cm)+"\n\n")
+sns.heatmap(cm, annot=True,fmt='.2f')
+plt.show()
+'''
+names = ['crazing','inclusion','patches','pitted_surface','rolled-in_scale','scratches']
+image = load_img('NEU-Dataset/images/crazing/crazing_1.jpg', target_size=(80, 80))
+image = img_to_array(image) / 255.0
+image = np.expand_dims(image, axis=0)
+(boxPreds, labelPreds) = model.predict(image)
+print(boxPreds)
+
+boxPreds = boxPreds[0]
+startX = boxPreds[0]
+startY = boxPreds[1]
+endX = boxPreds[2]
+endY = boxPreds[3]
+'''
+startX1 = boxPreds[4]
+startY1 = boxPreds[5]
+endX1 = boxPreds[6]
+endY1 = boxPreds[7]
+'''
+i = np.argmax(labelPreds, axis=1)
+i = i[0]
+print(i)
+print(names[i])
+image = cv2.imread('NEU-Dataset/images/crazing/crazing_1.jpg')
+image = imutils.resize(image, width=200)
+'''
+startX = int(startX * 512)
+startY = int(startY * 512)
+endX = int(endX * 512)
+endY = int(endY * 512)
+
+startX1 = int(startX1 * 512)
+startY1 = int(startY1 * 512)
+endX1 = int(endX1 * 512)
+endY1 = int(endY1 * 512)
+'''
+print(str(startX)+" "+str(startY)+" "+str(endX)+" "+str(endY))
+#y = startY - 10 if startY - 10 > 10 else startY + 10
+cv2.putText(image, str(names[i]), (startX, startY), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
+cv2.rectangle(image, (startX, startY), (endX, endY), (0, 255, 0), 2)
+#cv2.rectangle(image, (startX1, startY1), (endX1, endY1), (0, 255, 0), 2)
+cv2.imshow("Output", image)
+cv2.waitKey(0)
+

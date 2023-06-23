@@ -1,0 +1,195 @@
+from tkinter import *
+import tkinter
+from tkinter import filedialog
+import matplotlib.pyplot as plt
+from tkinter.filedialog import askopenfilename
+import tensorflow as tf
+import numpy as np
+from tensorflow.keras.layers import *
+from PIL import Image
+import matplotlib.pyplot as plt
+from DataReader import DataReader
+import cv2
+from math import log10, sqrt
+import os
+import imutils
+from keras.preprocessing.image import img_to_array
+from keras.preprocessing.image import load_img
+from keras.models import load_model
+
+main = tkinter.Tk()
+main.title("A Generative Adversarial Network-based Deep Learning Method for Low-quality Defect Image Reconstruction and Recognition")
+main.geometry("1200x1200")
+
+
+global gan_RGB
+global saver
+global RGB
+global MAX
+
+names = ['crazing','inclusion']
+
+global filename
+global vgg_model
+
+def generateCNNModel(RGB):
+    cnn1 = Conv2D(3,1,1,padding="same",activation="relu",use_bias=True,kernel_initializer=tf.initializers.random_normal(stddev=0.02),
+                   kernel_regularizer=tf.keras.regularizers.l2(1e-4))(RGB)#layer 1
+    cnn2 = Conv2D(3,3,1,padding="same",activation="relu",use_bias=True,kernel_initializer=tf.initializers.random_normal(stddev=0.02),
+                   kernel_regularizer=tf.keras.regularizers.l2(1e-4))(cnn1)#layer 2
+    encoder1 = tf.concat([cnn1,cnn2],axis=-1) #concatenate layer1 and layer2 to from residual network
+    cnn3 = Conv2D(3,5,1,padding="same",activation="relu",use_bias=True,kernel_initializer=tf.initializers.random_normal(stddev=0.02),
+                   kernel_regularizer=tf.keras.regularizers.l2(1e-4))(encoder1)
+    encoder2 = tf.concat([cnn2,cnn3],axis=-1)#concatenate layer2 and layer3 to from residual network
+    cnn4 = Conv2D(3,7,1,padding="same",activation="relu",use_bias=True,kernel_initializer=tf.initializers.random_normal(stddev=0.02),
+                   kernel_regularizer=tf.keras.regularizers.l2(1e-4))(encoder2)
+    decoder = tf.concat([cnn1,cnn2,cnn3,cnn4],axis=-1)
+    cnn5 = Conv2D(3,3,1,padding="same",activation="relu",use_bias=True,kernel_initializer=tf.initializers.random_normal(stddev=0.02),
+                   kernel_regularizer=tf.keras.regularizers.l2(1e-4))(decoder)
+    MAX = cnn5 #max layer
+    dehaze_cnn = ReLU(max_value=1.0)(tf.math.multiply(MAX,RGB) - MAX + 1.0) #replace pixels intensity
+    return dehaze_cnn
+
+def loadModel():
+    global gan_RGB
+    global saver
+    global RGB
+    global MAX
+    global vgg_model
+    dr = DataReader()  #class to read training images
+    tf.reset_default_graph() #reset tensorflow graph
+    trainImages, testImages = dr.readImages("./data/train","./data/test") #reading image to generate tensorflow CNN compression object
+    trainData, testData, itr = dr.generateTrainTestImages(trainImages,testImages) 
+    next_element = itr.get_next()
+
+    RGB = tf.placeholder(shape=(None,480, 640,3),dtype=tf.float32)
+    MAX = tf.placeholder(shape=(None,480, 640,3),dtype=tf.float32)
+    gan_RGB = generateCNNModel(RGB) #loading and generating model
+
+    trainingLoss = tf.reduce_mean(tf.square(gan_RGB-MAX)) #optimizations
+    optimizerRate = tf.train.AdamOptimizer(1e-4)
+    trainVariables = tf.trainable_variables()
+    gradient = optimizerRate.compute_gradients(trainingLoss,trainVariables)
+    clippedGradients = [(tf.clip_by_norm(gradients,0.1),var1) for gradients,var1 in gradient]
+    optimize = optimizerRate.apply_gradients(gradient)
+
+    saver = tf.train.Saver()
+
+    #vgg_model = load_model('model/model.h5')
+    pathlabel.config(text='GAN & VGG16 model loaded')
+    
+
+ 
+def PSNR(original, compressed): 
+    mse = np.mean((original - compressed) ** 2) 
+    if(mse == 0):
+        return 100
+    max_pixel = 255.0
+    psnr = 20 * log10(max_pixel / sqrt(mse)) 
+    return psnr,mse
+
+def SNR(a, axis=None, ddof=0):
+    a = np.asanyarray(a)
+    m = a.mean(axis)
+    sd = a.std(axis=None, ddof=ddof)
+    return np.where(sd == 0, 0, m/sd)
+
+#function to allow user to upload images directory
+def compressImage():
+    text.delete('1.0', END)
+    global filename
+    global vgg_model
+    filename = askopenfilename(initialdir = "testImages")
+    pathlabel.config(text=filename)
+    with tf.Session() as session:
+        saver.restore(session,'./model/data')
+        img = Image.open(filename)
+        img = img.resize((640, 480))
+        img = np.asarray(img) / 255.0
+        img = img.reshape((1,) + img.shape)
+        ganImage = session.run(gan_RGB,feed_dict={RGB:img,MAX:img})
+        orig = cv2.imread(filename)
+        height, width, channels = orig.shape
+        orig = cv2.resize(orig,(640, 480),interpolation = cv2.INTER_CUBIC)
+        ganImage = ganImage[0] * 255
+        ganImage = cv2.cvtColor(ganImage, cv2.COLOR_RGB2BGR)
+        ganImage = cv2.resize(ganImage,(width,height))
+        cv2.imwrite("high_quality.jpg",ganImage,[cv2.IMWRITE_JPEG_QUALITY, 70])
+        vgg_model = load_model('model/model.h5')
+        image = load_img("high_quality.jpg", target_size=(80, 80))
+        image = img_to_array(image) / 255.0
+        image = np.expand_dims(image, axis=0)
+        (boxPreds, labelPreds) = vgg_model.predict(image)
+        print(boxPreds)
+
+        boxPreds = boxPreds[0]
+        startX = int(boxPreds[0] *200)
+        startY = int(boxPreds[1] *200)
+        endX = int(boxPreds[2] *200)
+        endY = int(boxPreds[3] *200)
+        if startY > 100:
+            startY = startY - 100
+        print(str(startX)+" "+str(startY)+" "+str(endX)+" "+str(endY))
+        predict= np.argmax(labelPreds, axis=1)
+        predict = predict[0]
+        image = cv2.imread("high_quality.jpg")
+        image = imutils.resize(image, width=200)
+        cv2.putText(image, "Recognized As "+str(names[predict]), (startX, startY), cv2.FONT_HERSHEY_SIMPLEX, 0.25, (0, 255, 0), 2)
+        cv2.rectangle(image, (startX, startY), (endX, endY), (0, 255, 0), 2)
+        img = Image.open(filename)
+        orig = cv2.imread(filename)
+        psnr,mse = PSNR(orig,image)
+        snr = SNR(image)
+        text.insert(END,'PSNR : '+str(psnr)+"\n")
+        text.insert(END,'MI : '+str(snr)+"\n")
+        text.insert(END,'SSIM : '+str(mse/100)+"\n")
+        text.insert(END,'\nImage Recognized As : '+str(names[predict]))
+        figure, axis = plt.subplots(nrows=1, ncols=2,figsize=(10,10))
+        axis[0].set_title("Original Low Quality Image")
+        axis[1].set_title("GAN High Quality with Defect Reconstruction & Recognition")
+        axis[0].imshow(img)
+        axis[1].imshow(image)
+        figure.tight_layout()
+        plt.show()
+    
+    
+
+    
+def close():
+    main.destroy()
+
+font = ('times', 15, 'bold')
+title = Label(main, text='A Generative Adversarial Network-based Deep Learning Method for Low-quality Defect Image Reconstruction and Recognition')
+title.config(bg='coral', fg='white')  
+title.config(font=font)           
+title.config(height=3, width=100)       
+title.place(x=5,y=5)
+
+font1 = ('times', 14, 'bold')
+upload = Button(main, text="Generate & Load GAN & VGG16 Model", command=loadModel)
+upload.place(x=50,y=100)
+upload.config(font=font1)  
+
+pathlabel = Label(main)
+pathlabel.config(bg='brown', fg='white')  
+pathlabel.config(font=font1)           
+pathlabel.place(x=450,y=100)
+
+dcpButton = Button(main, text="Upload Test Image & Reconstruct  & Recognize Defect", command=compressImage)
+dcpButton.place(x=50,y=150)
+dcpButton.config(font=font1)
+
+exitButton = Button(main, text="Exit", command=close)
+exitButton.place(x=50,y=200)
+exitButton.config(font=font1)
+
+font1 = ('times', 12, 'bold')
+text=Text(main,height=10,width=150)
+scroll=Scrollbar(text)
+text.configure(yscrollcommand=scroll.set)
+text.place(x=10,y=350)
+text.config(font=font1)
+
+
+main.config(bg='light slate gray')
+main.mainloop()
